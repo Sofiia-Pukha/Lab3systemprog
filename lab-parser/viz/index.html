@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Візуалізація AST</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f3f5f8;
+    --text: #1d2330;
+    --muted: #6b7385;
+    --line: #c3c9d4;
+    --hl: #fff1b8;
+    --stmt: #3b6fd6;
+    --expr: #d0702c;
+    --leaf: #2f9a5b;
+    --root: #6a4bc4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1e24;
+      --panel: #23272f;
+      --text: #e3e6ec;
+      --muted: #9aa2b3;
+      --line: #4a5160;
+      --hl: #5a4d1c;
+    }
+  }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+  }
+  #left {
+    width: 34%;
+    min-width: 260px;
+    background: var(--panel);
+    padding: 16px;
+    box-sizing: border-box;
+    overflow: auto;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  #file { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  #code { font-family: Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+  .row { display: flex; white-space: pre; }
+  .num { width: 30px; color: var(--muted); text-align: right; padding-right: 10px; user-select: none; }
+  .row.active { background: var(--hl); }
+  .buttons { margin: 14px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-size: 13px; padding: 6px 10px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 4px;
+    background: var(--bg); color: var(--text);
+  }
+  .legend { font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 4px 0 10px; }
+  .legend span:first-child { margin-left: 0; }
+  #tree { flex: 1; }
+  svg { width: 100%; height: 100%; cursor: grab; }
+  .link { fill: none; stroke: var(--line); stroke-width: 1.5px; }
+  .node rect { stroke-width: 2px; fill: var(--bg); }
+  .node text { font-size: 12px; fill: var(--text); }
+  .node .val { font-size: 11px; fill: var(--muted); }
+  .node { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="left">
+  <h1>AST програми</h1>
+  <div id="file"></div>
+  <div class="buttons">
+    <button id="expand">Розгорнути все</button>
+    <button id="collapse">Згорнути до операторів</button>
+    <button id="center">По центру</button>
+  </div>
+  <div class="legend">
+    <span style="background:var(--root)"></span>програма
+    <span style="background:var(--stmt)"></span>оператор
+    <span style="background:var(--expr)"></span>вираз
+    <span style="background:var(--leaf)"></span>змінна / число
+  </div>
+  <p class="legend">Клік по вузлу згортає або розгортає піддерево. При наведенні підсвічується рядок коду.</p>
+  <div id="code"></div>
+</div>
+<div id="tree"><svg></svg></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="ast_data.js"></script>
+<script>
+  const STMT = ['decl', 'assign', 'if', 'while', 'for', 'printf', 'block'];
+
+  function color(d) {
+    const k = d.data.name;
+    if (k === 'program') return 'var(--root)';
+    if (STMT.includes(k)) return 'var(--stmt)';
+    if (k === 'var' || k === 'num') return 'var(--leaf)';
+    return 'var(--expr)';
+  }
+
+  function shortValue(v) {
+    return v.length > 16 ? v.slice(0, 15) + '…' : v;
+  }
+
+  // вихідний код з номерами рядків
+  document.getElementById('file').textContent = SOURCE_NAME;
+  const codeBox = document.getElementById('code');
+  SOURCE_CODE.split('\n').forEach((text, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.id = 'line' + (i + 1);
+    row.innerHTML = '<span class="num">' + (i + 1) + '</span>';
+    row.appendChild(document.createTextNode(text || ' '));
+    codeBox.appendChild(row);
+  });
+
+  function highlight(line, on) {
+    const row = document.getElementById('line' + line);
+    if (row) row.classList.toggle('active', on);
+  }
+
+  // дерево
+  const svg = d3.select('svg');
+  const g = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.2, 3]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom);
+
+  const root = d3.hierarchy(AST_DATA);
+  root.descendants().forEach(d => { d._children = d.children; });
+  const layout = d3.tree().nodeSize([100, 75]);
+  const W = 86, H = 34;
+
+  function update(source) {
+    layout(root);
+    const nodes = root.descendants();
+    const links = root.links();
+    const t = svg.transition().duration(300);
+
+    g.selectAll('.link')
+      .data(links, d => d.target.id)
+      .join(
+        enter => enter.append('path').attr('class', 'link')
+          .attr('d', () => d3.linkVertical()({ source: [source.x0, source.y0], target: [source.x0, source.y0] })),
+        update => update,
+        exit => exit.remove()
+      )
+      .transition(t)
+      .attr('d', d => d3.linkVertical()({ source: [d.source.x, d.source.y + H / 2], target: [d.target.x, d.target.y - H / 2] }));
+
+    const node = g.selectAll('.node')
+      .data(nodes, d => d.id)
+      .join(enter => {
+        const n = enter.append('g').attr('class', 'node')
+          .attr('transform', `translate(${source.x0},${source.y0})`)
+          .on('click', (e, d) => {
+            d.children = d.children ? null : d._children;
+            update(d);
+          })
+          .on('mouseenter', (e, d) => highlight(d.data.line, true))
+          .on('mouseleave', (e, d) => highlight(d.data.line, false));
+        n.append('rect').attr('x', -W / 2).attr('y', -H / 2).attr('width', W).attr('height', H).attr('rx', 6);
+        n.append('text').attr('text-anchor', 'middle').attr('dy', d => d.data.value ? -2 : 4).text(d => d.data.name);
+        n.append('text').attr('class', 'val').attr('text-anchor', 'middle').attr('dy', 12).text(d => shortValue(d.data.value));
+        n.append('title').text(d => `${d.data.name} ${d.data.value}\nрядок ${d.data.line}`);
+        return n;
+      });
+
+    node.transition(t).attr('transform', d => `translate(${d.x},${d.y})`);
+    node.select('rect')
+      .attr('stroke', color)
+      .attr('stroke-dasharray', d => (!d.children && d._children) ? '4 3' : null);
+
+    nodes.forEach(d => { d.x0 = d.x; d.y0 = d.y; });
+  }
+
+  let id = 0;
+  root.descendants().forEach(d => { d.id = id++; });
+  root.x0 = 0;
+  root.y0 = 0;
+
+  // вмістити все дерево у вікно
+  function center() {
+    const box = svg.node().getBoundingClientRect();
+    const xs = root.descendants().map(d => d.x);
+    const ys = root.descendants().map(d => d.y);
+    const w = d3.max(xs) - d3.min(xs) + W + 40;
+    const h = d3.max(ys) + H + 80;
+    const k = Math.max(0.6, Math.min(1, box.width / w, box.height / h));
+    const mid = (d3.max(xs) + d3.min(xs)) / 2;
+    svg.transition().duration(300)
+      .call(zoom.transform, d3.zoomIdentity.translate(box.width / 2 - mid * k, 40).scale(k));
+  }
+
+  function walk(d, fn) {
+    fn(d);
+    if (d._children) d._children.forEach(c => walk(c, fn));
+  }
+
+  document.getElementById('expand').onclick = () => {
+    walk(root, d => { d.children = d._children; });
+    update(root);
+    center();
+  };
+  document.getElementById('collapse').onclick = () => {
+    walk(root, d => {
+      d.children = d._children;
+      if (d.depth > 0 && d._children && STMT.includes(d.data.name)) d.children = null;
+    });
+    update(root);
+    center();
+  };
+  document.getElementById('center').onclick = center;
+
+  document.getElementById('collapse').click();
+</script>
+</body>
+</html>
